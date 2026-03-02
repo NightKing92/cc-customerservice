@@ -1,0 +1,10 @@
+server:
+  port: 8080
+
+deepseek:
+  api-key: ${DEEPSEEK_API_KEY:sk-your-key-here}
+  base-url: https://api.deepseek.com
+  model: deepseek-chat
+
+app:
+  session-timeout-minutes: 30
