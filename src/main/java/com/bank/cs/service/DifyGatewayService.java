@@ -261,6 +261,6 @@ public class DifyGatewayService {
     }
 
     private String toSseData(String json) {
-        return "data: " + json + "\n\n";
+        return json;
     }
 }
