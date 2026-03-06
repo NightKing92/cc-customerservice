@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>知识检索大比拼：RAG vs 规则引擎</title>
+    <style>
+        :root {
+            --primary-blue: #1e3a8a;
+            --light-blue: #eff6ff;
+            --primary-green: #065f46;
+            --light-green: #ecfdf5;
+            --text-main: #333;
+            --text-light: #666;
+        }
+        body {
+        
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            color: var(--text-main);
+            background-color: #f4f7f6;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: #fff;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.05);
+        }
+        h1 {
+            text-align: center;
+            color: #111;
+            margin-bottom: 10px;
+            font-size: 2.2em;
+        }
+        .subtitle {
+            text-align: center;
+            color: var(--text-light);
+            margin-bottom: 40px;
+            font-size: 1.1em;
+        }
+        .comparison-grid {
+            display: flex;
+            gap: 30px;
+            margin-bottom: 40px;
+        }
+        .card {
+            flex: 1;
+            padding: 30px;
+            border-radius: 10px;
+            border-top: 5px solid;
+        }
+        .card.rule {
+            background-color: var(--light-blue);
+            border-top-color: var(--primary-blue);
+        }
+        .card.rag {
+            background-color: var(--light-green);
+            border-top-color: var(--primary-green);
+        }
+        .card h2 {
+            margin-top: 0;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .rule h2 { color: var(--primary-blue); }
+        .rag h2 { color: var(--primary-green); }
+        
+        .analogy {
+            font-weight: bold;
+            font-size: 1.1em;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid rgba(0,0,0,0.1);
+        }
+        ul { padding-left: 20px; }
+        li { margin-bottom: 10px; }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        th, td {
+            padding: 15px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background-color: #f8fafc;
+            font-weight: bold;
+        }
+        .highlight-rule { color: var(--primary-blue); font-weight: bold; }
+        .highlight-rag { color: var(--primary-green); font-weight: bold; }
+        
+        .scenario-box {
+            background: #fff8f1;
+            border-left: 4px solid #f97316;
+            padding: 20px;
+            margin-top: 30px;
+            border-radius: 0 8px 8px 0;
+        }
+        .scenario-box h3 {
+            margin-top: 0;
+            color: #c2410c;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>🤖 知识检索大比拼</h1>
+    <div class="subtitle">给零基础的你：RAG大模型 vs 传统规则引擎</div>
+
+    <div class="comparison-grid">
+        <div class="card rule">
+            <h2>⚙️ 规则引擎 (Rule Engine)</h2>
+            <div class="analogy">💁‍♂️ 就像一位：一丝不苟的档案管理员</div>
+            <p><strong>怎么工作的？</strong><br>
+            它严格按照人类提前写好的“如果...就...” (IF-THEN) 逻辑图工作。只有客户说的话和它本子上的关键词完全对上，它才会给出固定的答案。</p>
+            <p><strong>比如在客服场景：</strong><br>
+            你设定：包含关键词“忘记密码”。<br>
+            客户问：“密码忘了怎么办？” ➔ 它秒回：重置链接。<br>
+            客户问：“我不记得登录口令了” ➔ <strong>它懵了（因为没匹配上关键词）。</strong></p>
+        </div>
+
+        <div class="card rag">
+            <h2>🧠 检索增强生成 (RAG)</h2>
+            <div class="analogy">🦸‍♂️ 就像一位：带着百万字参考书的超级学霸</div>
+            <p><strong>怎么工作的？</strong><br>
+            它先理解客户那句话的“深层含义”，然后去成千上万篇业务文档（参考书）里翻找相关的段落，最后用人类的语言把答案总结并重新讲出来。</p>
+            <p><strong>比如在客服场景：</strong><br>
+            客户问：“我在国外刷卡买包，提示被风控了咋整？”<br>
+            ➔ 它理解了这是“境外消费异常”，去文档库找到了《跨境交易安全指南》，最后用温柔的话术回答：“您好，由于跨国交易触发了安全机制，请您提供...”</p>
+        </div>
+    </div>
+
+    <h2>📊 优劣势硬核对比</h2>
+    <table>
+        <tr>
+            <th>维度</th>
+            <th>⚙️ 规则引擎</th>
+            <th>🧠 RAG (检索增强生成)</th>
+        </tr>
+        <tr>
+            <td><strong>准确性与确定性</strong></td>
+            <td><span class="highlight-rule">100% 确定。</span>只要触发规则，答案绝对标准，绝不瞎编。</td>
+            <td><span class="highlight-rag">偶有幻觉。</span>虽然有文档参考，但仍有极小概率总结错或“脑补”。</td>
+        </tr>
+        <tr>
+            <td><strong>理解能力 (泛化)</strong></td>
+            <td><strong>死板。</strong>换个说法、有错别字、口语化，它就认不出来了。</td>
+            <td><span class="highlight-rag">极强。</span>无惧错别字、倒装句、长篇大论的抱怨。</td>
+        </tr>
+        <tr>
+            <td><strong>维护成本</strong></td>
+            <td><span class="highlight-rule">极高。</span>业务一变，开发人员就要抓狂地去修改成百上千条错综复杂的逻辑线。</td>
+            <td><span class="highlight-rag">极低。</span>业务变了？直接把新的 Word/PDF 文档扔进知识库就完事了。</td>
+        </tr>
+        <tr>
+            <td><strong>回答风格</strong></td>
+            <td>机械、生硬的机器回复。</td>
+            <td>有温度、拟人化、可定制语气。</td>
+        </tr>
+    </table>
+
+    <div class="scenario-box">
+        <h3>🎯 实战建议：它们分别适合干什么？</h3>
+        <p><strong>⚙️ 规则引擎的绝对主场：</strong><br>
+        涉及金钱交易、核心合规、容错率为 0 的场景。例如：“转账冻结流程”、“密码连续输错3次的拦截机制”、“核实用户身份证号”。这些坚决不能让大模型自由发挥。</p>
+        
+        <p><strong>🧠 RAG 的大展身手之地：</strong><br>
+        长尾知识问答、政策解读、操作指引。例如：“最新的理财产品收益率怎么算？”、“帮我总结一下这个月信用卡的积分规则”、“房贷提前还款的违约金怎么扣？”</p>
+        
+        <p><strong>💡 终极奥义：融合架构！</strong><br>
+        现在的顶级智能客服，都是让它俩打配合！先用<strong>规则引擎</strong>做一道安全门和意图拦截，没命中的复杂问题，再交给 <strong>RAG</strong> 去知识库里翻书找答案。</p>
+    </div>
+</div>
+
+</body>
+</html>

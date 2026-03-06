@@ -1,0 +1,175 @@
+app:
+  description: 银行智能客服工小智 - U型受控智能体
+  icon: 🏦
+  icon_background: '#E6F7FF'
+  mode: advanced-chat
+  name: 工小智银行客服
+  use_icon_as_answer_icon: false
+
+kind: app
+version: 0.1.3
+
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    opening_statement: 您好！我是工小智，您的专属银行智能助手。请问有什么可以帮到您？
+    suggested_questions:
+      - 我上个月消费情况怎么样？
+      - 我的账户余额够买100克黄金吗？
+      - 帮我开具资产证明发到我的邮箱
+    suggested_questions_after_answer:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+    retriever_resource:
+      enabled: false
+    sensitive_word_avoidance:
+      enabled: false
+    file_upload:
+      image:
+        enabled: false
+        number_limits: 3
+        transfer_methods:
+          - local_file
+          - remote_url
+
+  graph:
+    nodes:
+      - id: start
+        type: custom
+        data:
+          type: start
+          title: 开始
+          variables:
+            - variable: user_id
+              label: 用户ID
+              type: text-input
+              required: false
+              max_length: 256
+              options: []
+        position:
+          x: 80
+          y: 300
+        width: 244
+        height: 116
+
+      - id: llm-gongxiaozhi
+        type: custom
+        data:
+          type: llm
+          title: 工小智
+          model:
+            provider: deepseek
+            name: deepseek-chat
+            mode: chat
+            completion_params:
+              temperature: 0.3
+              max_tokens: 2000
+          prompt_template:
+            - role: system
+              text: |
+                你是"工小智"，某银行的专属智能客服助手，性格专业、亲切、有温度。
+
+                ## 工作原则
+                1. 逐步收集信息：每次只问一个问题，不要一次问多个
+                2. 执行前必须确认：收集完所有信息后，向客户复述并请求确认，客户明确说"确认"或"是"后，才调用工具执行
+                3. 友好处理风控：若工具返回 status 为 BLOCKED_BY_RISK，用友好语气告知客户 observation 字段中的原因，并引导客户完成前置操作，绝不暗示可以绕过安全验证
+                4. 结果有温度：工具返回结构化数据后，生成有情绪价值的回复，不要直接展示原始 JSON 数据
+                5. 多轮记忆：始终记住本次对话中已收集到的信息，不要重复询问已知内容
+
+                ## 可办理的业务
+
+                ### 业务 1：消费习惯分析
+                触发场景：客户询问消费情况、花了多少钱、账单分析等
+                需收集：
+                  - 查询月份（请客户提供，格式 YYYY-MM，例如 2025-01）
+                调用工具：analyze_spending_habit
+                参数：userId（系统自动获取）、month（客户提供）
+
+                ### 业务 2：理财购买力评估
+                触发场景：客户询问账户余额够不够买某种理财产品、贵金属、基金等
+                需收集：
+                  - 目标金额（需要多少钱，数字，单位元）
+                  - 风险类型（产品类型，如"黄金"、"基金"等）
+                调用工具：check_wealth_purchasing_power
+                参数：userId（系统自动获取）、requiredAmount（客户提供）、riskType（客户提供）
+
+                ### 业务 3：资产证明邮件
+                触发场景：客户要求开具资产证明、开具证明文件并发送到邮箱
+                需收集：
+                  - 收件邮箱地址
+                调用工具：generate_and_email_asset_proof
+                参数：userId（系统自动获取）、emailAddress（客户提供）
+
+                ## 重要：风控结果处理
+                当任何工具返回以下结构时：
+                {"status": "BLOCKED_BY_RISK", "observation": "..."}
+
+                你必须：
+                1. 以友好语气告知客户被拦截的具体原因（直接使用 observation 的内容）
+                2. 给出明确的下一步引导（如"请先在 App 内完成人脸识别"）
+                3. 表示操作完成后可以继续
+                4. 绝对不能建议客户绕过或忽略安全验证
+
+                ## 当前用户信息
+                userId: {{#start.user_id#}}
+                （userId 是系统参数，直接使用，无需向用户询问）
+          variables: []
+          context:
+            enabled: false
+            variable_selector: []
+          vision:
+            enabled: false
+          memory:
+            window:
+              enabled: false
+              size: 10
+            role_prefix:
+              user: ''
+              assistant: ''
+        position:
+          x: 400
+          y: 300
+        width: 244
+        height: 98
+
+      - id: answer-final
+        type: custom
+        data:
+          type: answer
+          title: 回复客户
+          answer: '{{#llm-gongxiaozhi.text#}}'
+          variables: []
+        position:
+          x: 720
+          y: 300
+        width: 244
+        height: 107
+
+    edges:
+      - id: edge-start-to-llm
+        type: custom
+        source: start
+        target: llm-gongxiaozhi
+        sourceHandle: source
+        targetHandle: target
+        data:
+          sourceType: start
+          targetType: llm
+          isInIteration: false
+
+      - id: edge-llm-to-answer
+        type: custom
+        source: llm-gongxiaozhi
+        target: answer-final
+        sourceHandle: source
+        targetHandle: target
+        data:
+          sourceType: llm
+          targetType: answer
+          isInIteration: false
