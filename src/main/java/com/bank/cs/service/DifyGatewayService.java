@@ -5,27 +5,31 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.MediaType;
+import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Sinks;
 
+import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Dify 网关服务
  *
- * 负责调用 Dify Chatflow API，解析 agent_thought / message 事件，
- * 转换为前端可直接渲染的统一事件格式：
+ * 调用 Dify Chatflow API，手动解析 SSE 流，
+ * 转换为前端可直接渲染的统一事件格式。
  *
- *   {"type":"thinking",  "content":"..."}          // LLM 思考过程
- *   {"type":"tool_call", "tool":"...", "input":"..."} // 工具调用
- *   {"type":"tool_result","tool":"...","status":"SUCCESS|BLOCKED_BY_RISK","content":"..."} // 工具结果
- *   {"type":"text",      "content":"..."}          // 最终回复 token
- *   {"type":"done"}                                 // 结束
+ * Dify Chatflow 事件类型：
+ *   workflow_started / node_started / node_finished → 内部流转（提取 Agent 思维链）
+ *   agent_thought  → Agent 的思考、工具调用、工具返回
+ *   agent_message  → Agent 流式回复 token
+ *   text_chunk     → Answer 节点流式文本
+ *   message        → 完整消息（非流式场景）
+ *   message_end    → 结束，含 conversation_id
  */
 @Service
 public class DifyGatewayService {
@@ -36,7 +40,6 @@ public class DifyGatewayService {
     private final ObjectMapper objectMapper;
     private final String defaultUserId;
 
-    // sessionId -> dify conversation_id，保持多轮对话记忆
     private final Map<String, String> conversationMap = new ConcurrentHashMap<>();
 
     public DifyGatewayService(
@@ -46,158 +49,182 @@ public class DifyGatewayService {
         this.difyClient = WebClient.builder()
                 .baseUrl(baseUrl)
                 .defaultHeader("Authorization", "Bearer " + apiKey)
-                .defaultHeader("Content-Type", "application/json")
                 .codecs(c -> c.defaultCodecs().maxInMemorySize(4 * 1024 * 1024))
                 .build();
         this.objectMapper = new ObjectMapper();
         this.defaultUserId = defaultUserId;
     }
 
-    /**
-     * 发送消息到 Dify，返回统一格式的事件流
-     */
     public Flux<String> chat(String sessionId, String userMessage) {
         String conversationId = conversationMap.getOrDefault(sessionId, "");
-        String userId = defaultUserId;
 
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("inputs", Map.of("user_id", userId));
+        body.put("inputs", Map.of("user_id", defaultUserId));
         body.put("query", userMessage);
         body.put("response_mode", "streaming");
-        body.put("user", userId);
+        body.put("user", defaultUserId);
         if (!conversationId.isEmpty()) {
             body.put("conversation_id", conversationId);
         }
 
         log.info("[Dify] session={}, conversationId={}, query={}", sessionId, conversationId, userMessage);
 
-        return difyClient.post()
+        Sinks.Many<String> sink = Sinks.many().unicast().onBackpressureBuffer();
+
+        // 用 DataBuffer 接收原始字节流，手动解析 SSE
+        difyClient.post()
                 .uri("/v1/chat-messages")
+                .header("Content-Type", "application/json")
+                .header("Accept", "text/event-stream")
                 .bodyValue(body)
-                .accept(MediaType.TEXT_EVENT_STREAM)
                 .retrieve()
-                .bodyToFlux(String.class)
-                .filter(line -> !line.isBlank() && !line.equals("[DONE]"))
-                .flatMap(line -> parseAndTransform(line, sessionId))
-                .filter(Objects::nonNull)
-                .onErrorResume(e -> {
-                    log.error("[Dify] Stream error", e);
-                    return Flux.just(toSseData("{\"type\":\"error\",\"content\":\"" + e.getMessage() + "\"}"));
-                });
+                .bodyToFlux(DataBuffer.class)
+                .map(buffer -> {
+                    String chunk = buffer.toString(StandardCharsets.UTF_8);
+                    DataBufferUtils.release(buffer);
+                    return chunk;
+                })
+                .subscribe(
+                        chunk -> processChunk(chunk, sessionId, sink),
+                        error -> {
+                            log.error("[Dify] Stream error", error);
+                            sink.tryEmitNext(toSseData(toJson(Map.of(
+                                    "type", "error",
+                                    "content", error.getMessage() != null ? error.getMessage() : "Unknown error"
+                            ))));
+                            sink.tryEmitComplete();
+                        },
+                        () -> {
+                            log.info("[Dify] Stream completed for session={}", sessionId);
+                            sink.tryEmitComplete();
+                        }
+                );
+
+        return sink.asFlux();
     }
 
-    /**
-     * 清除会话对应的 Dify conversation，开启新对话
-     */
     public void clearSession(String sessionId) {
         conversationMap.remove(sessionId);
     }
 
-    // ==================== 事件解析 ====================
+    // ==================== SSE 原始流解析 ====================
 
-    private Flux<String> parseAndTransform(String line, String sessionId) {
-        // SSE 格式：去掉 "data: " 前缀
-        String data = line.startsWith("data:") ? line.substring(5).trim() : line.trim();
-        if (data.isEmpty()) return Flux.empty();
+    private final Map<String, StringBuilder> bufferMap = new ConcurrentHashMap<>();
 
-        try {
-            JsonNode node = objectMapper.readTree(data);
-            String event = node.path("event").asText("");
+    private void processChunk(String chunk, String sessionId, Sinks.Many<String> sink) {
+        // 拼接缓冲区（SSE 事件可能跨 chunk 边界）
+        StringBuilder buffer = bufferMap.computeIfAbsent(sessionId, k -> new StringBuilder());
+        buffer.append(chunk);
 
-            return switch (event) {
-                case "agent_thought" -> handleAgentThought(node);
-                case "message" -> handleMessage(node);
-                case "message_end" -> handleMessageEnd(node, sessionId);
-                // Chatflow workflow 事件也可能出现
-                case "workflow_started", "node_started", "node_finished",
-                     "workflow_finished" -> Flux.empty(); // 内部事件不透传
-                case "text_chunk" -> handleTextChunk(node);
-                default -> Flux.empty();
-            };
-        } catch (Exception e) {
-            log.debug("[Dify] Parse skip: {}", data.substring(0, Math.min(data.length(), 80)));
-            return Flux.empty();
+        // 按换行分割，寻找完整的 SSE 事件
+        String content = buffer.toString();
+        String[] lines = content.split("\n");
+
+        // 如果最后一行不以换行结尾，保留为未完成部分
+        boolean endsWithNewline = content.endsWith("\n");
+        buffer.setLength(0);
+        if (!endsWithNewline && lines.length > 0) {
+            buffer.append(lines[lines.length - 1]);
+            String[] complete = new String[lines.length - 1];
+            System.arraycopy(lines, 0, complete, 0, lines.length - 1);
+            lines = complete;
+        }
+
+        for (String line : lines) {
+            String trimmed = line.trim();
+            if (trimmed.startsWith("data:")) {
+                String data = trimmed.substring(5).trim();
+                if (!data.isEmpty()) {
+                    handleSseData(data, sessionId, sink);
+                }
+            }
+            // event: ping 等非 data 行直接忽略
         }
     }
 
-    /**
-     * agent_thought 事件：包含思考过程、工具调用、工具返回
-     * Dify 会多次发送此事件，逐步填充 thought / tool / tool_input / observation
-     */
-    private Flux<String> handleAgentThought(JsonNode node) {
+    private void handleSseData(String data, String sessionId, Sinks.Many<String> sink) {
+        try {
+            JsonNode node = objectMapper.readTree(data);
+            String event = node.path("event").asText("");
+            log.debug("[Dify] event={}, data={}", event, data.substring(0, Math.min(data.length(), 120)));
+
+            switch (event) {
+                case "agent_thought" -> emitAgentThought(node, sink);
+                case "agent_message" -> emitText(node.path("answer").asText(""), sink);
+                case "text_chunk" -> emitText(node.path("data").path("text").asText(""), sink);
+                case "message" -> emitText(node.path("answer").asText(""), sink);
+                case "message_end" -> {
+                    String convId = node.path("conversation_id").asText("");
+                    if (!convId.isEmpty()) {
+                        conversationMap.put(sessionId, convId);
+                        log.info("[Dify] conversation_id saved: session={}, convId={}", sessionId, convId);
+                    }
+                    sink.tryEmitNext(toSseData("{\"type\":\"done\"}"));
+                    bufferMap.remove(sessionId);
+                }
+                case "node_started" -> {
+                    String nodeType = node.path("data").path("node_type").asText("");
+                    String title = node.path("data").path("title").asText("");
+                    if ("agent".equals(nodeType)) {
+                        sink.tryEmitNext(toSseData(toJson(Map.of(
+                                "type", "thinking",
+                                "content", "正在调用智能助手 [" + title + "] ..."
+                        ))));
+                    }
+                }
+                case "node_finished" -> {
+                    String nodeType = node.path("data").path("node_type").asText("");
+                    if ("agent".equals(nodeType)) {
+                        // Agent 节点完成，可能包含工具调用信息
+                        log.info("[Dify] Agent node finished");
+                    }
+                }
+                // workflow_started, workflow_finished, ping 等忽略
+                default -> log.debug("[Dify] Ignored event: {}", event);
+            }
+        } catch (Exception e) {
+            log.warn("[Dify] Parse error for data: {}", data.substring(0, Math.min(data.length(), 80)), e);
+        }
+    }
+
+    // ==================== 事件发射 ====================
+
+    private void emitAgentThought(JsonNode node, Sinks.Many<String> sink) {
         String thought = node.path("thought").asText("").trim();
         String tool = node.path("tool").asText("").trim();
         String toolInput = node.path("tool_input").asText("").trim();
         String observation = node.path("observation").asText("").trim();
 
-        // 有思考内容
         if (!thought.isEmpty()) {
-            String payload = toJson(Map.of("type", "thinking", "content", thought));
-            return Flux.just(toSseData(payload));
+            sink.tryEmitNext(toSseData(toJson(Map.of("type", "thinking", "content", thought))));
         }
 
-        // 有工具调用（tool + tool_input 出现）
         if (!tool.isEmpty() && !toolInput.isEmpty() && observation.isEmpty()) {
-            // 格式化参数展示
-            String formattedInput = formatToolInput(toolInput);
-            String payload = toJson(Map.of(
+            sink.tryEmitNext(toSseData(toJson(Map.of(
                     "type", "tool_call",
                     "tool", tool,
-                    "input", formattedInput
-            ));
-            return Flux.just(toSseData(payload));
+                    "input", formatToolInput(toolInput)
+            ))));
         }
 
-        // 有工具结果（observation 出现）
         if (!observation.isEmpty()) {
             boolean isBlocked = observation.contains("BLOCKED_BY_RISK");
-            String status = isBlocked ? "BLOCKED_BY_RISK" : "SUCCESS";
-            String displayContent = extractObservation(observation);
-            String payload = toJson(Map.of(
+            sink.tryEmitNext(toSseData(toJson(Map.of(
                     "type", "tool_result",
                     "tool", tool,
-                    "status", status,
-                    "content", displayContent
-            ));
-            return Flux.just(toSseData(payload));
+                    "status", isBlocked ? "BLOCKED_BY_RISK" : "SUCCESS",
+                    "content", extractObservation(observation)
+            ))));
         }
-
-        return Flux.empty();
     }
 
-    /**
-     * message 事件：最终回复的流式 token
-     */
-    private Flux<String> handleMessage(JsonNode node) {
-        String answer = node.path("answer").asText("");
-        if (answer.isEmpty()) return Flux.empty();
-        String payload = toJson(Map.of("type", "text", "content", answer));
-        return Flux.just(toSseData(payload));
-    }
-
-    /**
-     * text_chunk 事件：Chatflow 模式下的文字块
-     */
-    private Flux<String> handleTextChunk(JsonNode node) {
-        String text = node.path("data").path("text").asText("");
-        if (text.isEmpty()) return Flux.empty();
-        String payload = toJson(Map.of("type", "text", "content", text));
-        return Flux.just(toSseData(payload));
-    }
-
-    /**
-     * message_end 事件：保存 conversation_id，发送结束信号
-     */
-    private Flux<String> handleMessageEnd(JsonNode node, String sessionId) {
-        String conversationId = node.path("conversation_id").asText("");
-        if (!conversationId.isEmpty()) {
-            conversationMap.put(sessionId, conversationId);
-            log.info("[Dify] conversation_id saved: session={}, convId={}", sessionId, conversationId);
+    private void emitText(String text, Sinks.Many<String> sink) {
+        if (text != null && !text.isEmpty()) {
+            sink.tryEmitNext(toSseData(toJson(Map.of("type", "text", "content", text))));
         }
-        return Flux.just(toSseData("{\"type\":\"done\"}"));
     }
 
-    // ==================== 格式化工具方法 ====================
+    // ==================== 工具方法 ====================
 
     private String formatToolInput(String toolInputJson) {
         try {
@@ -215,17 +242,10 @@ public class DifyGatewayService {
     private String extractObservation(String observation) {
         try {
             JsonNode node = objectMapper.readTree(observation);
-            // 优先使用 observation 字段，其次 status
             if (node.has("observation")) return node.path("observation").asText();
-            if (node.has("status")) {
-                String status = node.path("status").asText();
-                if ("BLOCKED_BY_RISK".equals(status)) {
-                    return node.path("observation").asText(observation);
-                }
-            }
-            return observation.length() > 200 ? observation.substring(0, 200) + "..." : observation;
+            return observation.length() > 300 ? observation.substring(0, 300) + "..." : observation;
         } catch (Exception e) {
-            return observation.length() > 200 ? observation.substring(0, 200) + "..." : observation;
+            return observation.length() > 300 ? observation.substring(0, 300) + "..." : observation;
         }
     }
 
