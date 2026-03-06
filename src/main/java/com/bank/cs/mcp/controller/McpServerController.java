@@ -88,6 +88,10 @@ public class McpServerController {
                 case "initialize" -> buildInitializeResult();
                 case "tools/list" -> buildToolsListResult();
                 case "tools/call" -> dispatchToolCall(request);
+                // MCP 协议要求这些方法返回空列表，不能返回 error
+                case "resources/list" -> Map.of("resources", List.of());
+                case "resources/templates/list" -> Map.of("resourceTemplates", List.of());
+                case "prompts/list" -> Map.of("prompts", List.of());
                 default -> null;
             };
 
