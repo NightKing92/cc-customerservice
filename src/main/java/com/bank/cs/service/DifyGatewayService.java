@@ -132,6 +132,9 @@ public class DifyGatewayService {
 
         for (String line : lines) {
             String trimmed = line.trim();
+            if (!trimmed.isEmpty()) {
+                log.info("[Dify-RAW] {}", trimmed.substring(0, Math.min(trimmed.length(), 150)));
+            }
             if (trimmed.startsWith("data:")) {
                 String data = trimmed.substring(5).trim();
                 if (!data.isEmpty()) {
@@ -146,7 +149,7 @@ public class DifyGatewayService {
         try {
             JsonNode node = objectMapper.readTree(data);
             String event = node.path("event").asText("");
-            log.debug("[Dify] event={}, data={}", event, data.substring(0, Math.min(data.length(), 120)));
+            log.info("[Dify] event={}, data={}", event, data.substring(0, Math.min(data.length(), 200)));
 
             switch (event) {
                 case "agent_thought" -> emitAgentThought(node, sink);
@@ -180,7 +183,7 @@ public class DifyGatewayService {
                     }
                 }
                 // workflow_started, workflow_finished, ping 等忽略
-                default -> log.debug("[Dify] Ignored event: {}", event);
+                default -> log.info("[Dify] Ignored event: {}", event);
             }
         } catch (Exception e) {
             log.warn("[Dify] Parse error for data: {}", data.substring(0, Math.min(data.length(), 80)), e);
