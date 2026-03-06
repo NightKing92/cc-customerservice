@@ -105,6 +105,7 @@ public class DifyGatewayService {
 
     public void clearSession(String sessionId) {
         conversationMap.remove(sessionId);
+        thinkStateMap.remove(sessionId);
     }
 
     // ==================== SSE 原始流解析 ====================
@@ -153,9 +154,9 @@ public class DifyGatewayService {
 
             switch (event) {
                 case "agent_thought" -> emitAgentThought(node, sink);
-                case "agent_message" -> emitText(node.path("answer").asText(""), sink);
-                case "text_chunk" -> emitText(node.path("data").path("text").asText(""), sink);
-                case "message" -> emitText(node.path("answer").asText(""), sink);
+                case "agent_message" -> emitText(node.path("answer").asText(""), sessionId, sink);
+                case "text_chunk" -> emitText(node.path("data").path("text").asText(""), sessionId, sink);
+                case "message" -> emitText(node.path("answer").asText(""), sessionId, sink);
                 case "message_end" -> {
                     String convId = node.path("conversation_id").asText("");
                     if (!convId.isEmpty()) {
@@ -221,10 +222,58 @@ public class DifyGatewayService {
         }
     }
 
-    private void emitText(String text, Sinks.Many<String> sink) {
-        if (text != null && !text.isEmpty()) {
-            sink.tryEmitNext(toSseData(toJson(Map.of("type", "text", "content", text))));
+    // 跟踪每个 session 是否正处于 <think> 块内
+    private final Map<String, Boolean> thinkStateMap = new ConcurrentHashMap<>();
+
+    private void emitText(String text, String sessionId, Sinks.Many<String> sink) {
+        if (text == null || text.isEmpty()) return;
+
+        boolean inThink = thinkStateMap.getOrDefault(sessionId, false);
+        int idx = 0;
+
+        while (idx < text.length()) {
+            if (!inThink) {
+                int thinkStart = text.indexOf("<think>", idx);
+                if (thinkStart == -1) {
+                    // 无更多 think 标签，剩余部分作为正常文本
+                    String remaining = text.substring(idx).trim();
+                    if (!remaining.isEmpty()) {
+                        sink.tryEmitNext(toSseData(toJson(Map.of("type", "text", "content", remaining))));
+                    }
+                    break;
+                } else {
+                    // <think> 之前的文本作为正常输出
+                    if (thinkStart > idx) {
+                        String before = text.substring(idx, thinkStart).trim();
+                        if (!before.isEmpty()) {
+                            sink.tryEmitNext(toSseData(toJson(Map.of("type", "text", "content", before))));
+                        }
+                    }
+                    idx = thinkStart + 7; // 跳过 "<think>"
+                    inThink = true;
+                }
+            } else {
+                int thinkEnd = text.indexOf("</think>", idx);
+                if (thinkEnd == -1) {
+                    // think 块未闭合，后续 chunk 会继续
+                    String thinking = text.substring(idx).trim();
+                    if (!thinking.isEmpty()) {
+                        sink.tryEmitNext(toSseData(toJson(Map.of("type", "thinking", "content", thinking))));
+                    }
+                    break;
+                } else {
+                    // think 块完整
+                    String thinking = text.substring(idx, thinkEnd).trim();
+                    if (!thinking.isEmpty()) {
+                        sink.tryEmitNext(toSseData(toJson(Map.of("type", "thinking", "content", thinking))));
+                    }
+                    idx = thinkEnd + 8; // 跳过 "</think>"
+                    inThink = false;
+                }
+            }
         }
+
+        thinkStateMap.put(sessionId, inThink);
     }
 
     // ==================== 工具方法 ====================

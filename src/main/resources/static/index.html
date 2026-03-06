@@ -101,6 +101,17 @@
             color: var(--text);
             border-bottom-left-radius: 4px;
             box-shadow: var(--shadow);
+            white-space: normal;
+        }
+        .message.assistant .message-bubble p { margin: 0 0 8px 0; }
+        .message.assistant .message-bubble p:last-child { margin-bottom: 0; }
+        .message.assistant .message-bubble strong { font-weight: 600; }
+        .message.assistant .message-bubble ul, .message.assistant .message-bubble ol {
+            margin: 4px 0 8px 20px;
+        }
+        .message.assistant .message-bubble li { margin-bottom: 2px; }
+        .message.assistant .message-bubble code {
+            background: #f0f0f0; padding: 1px 4px; border-radius: 3px; font-size: 13px;
         }
         .message.system .message-bubble {
             background: var(--primary-light);
@@ -150,9 +161,47 @@
             background: #f8f8f8;
             border-left-color: #9aa0a6;
             color: var(--text-secondary);
-            font-style: italic;
         }
         .chain-card.thinking .chain-icon { font-size: 14px; margin-top: 1px; flex-shrink: 0; }
+        .chain-card.thinking .chain-content {
+            max-height: 120px;
+            overflow-y: auto;
+            font-size: 12px;
+            line-height: 1.5;
+            scrollbar-width: thin;
+        }
+        .chain-card.thinking .chain-content::-webkit-scrollbar { width: 4px; }
+        .chain-card.thinking .chain-content::-webkit-scrollbar-thumb { background: #ccc; border-radius: 2px; }
+
+        /* 思考脉冲动画 */
+        @keyframes thinkPulse {
+            0%, 100% { border-left-color: #9aa0a6; }
+            50% { border-left-color: #1a73e8; }
+        }
+        .chain-card.thinking.active {
+            animation: thinkPulse 1.5s ease-in-out infinite;
+        }
+        /* 打字光标 */
+        .chain-card.thinking.active .chain-content::after {
+            content: '▌';
+            color: #1a73e8;
+            animation: blink 0.8s step-end infinite;
+        }
+        @keyframes blink { 50% { opacity: 0; } }
+
+        /* 工具调用旋转动画 */
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .chain-card.tool-call.pending .chain-icon {
+            display: inline-block;
+            animation: spin 1.5s linear infinite;
+        }
+
+        /* 卡片入场动画 */
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateX(-12px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+        .chain-card { animation: slideIn 0.3s ease; }
 
         /* 工具调用 */
         .chain-card.tool-call {
@@ -340,9 +389,9 @@
     </div>
 
     <div class="quick-actions" id="quickActions">
-        <button class="quick-btn" onclick="sendQuick('我上个月消费情况怎么样？')">📊 消费分析</button>
-        <button class="quick-btn" onclick="sendQuick('我的账户余额够买100克黄金吗？')">🥇 购买黄金</button>
-        <button class="quick-btn" onclick="sendQuick('帮我开具资产证明发到我的邮箱')">📄 资产证明</button>
+        <button class="quick-btn" onclick="sendQuick('请帮我分析一下用户demo-user-001在2025-01月的消费习惯')">📊 消费分析</button>
+        <button class="quick-btn" onclick="sendQuick('请帮我查看用户demo-user-001的余额能否购买50000元的黄金理财产品')">🥇 购买黄金</button>
+        <button class="quick-btn" onclick="sendQuick('请帮用户demo-user-001生成资产证明并发送到test@example.com邮箱')">📄 资产证明</button>
         <button class="quick-btn" onclick="sendQuick('你好，你能做什么？')">👋 了解功能</button>
     </div>
 
@@ -386,11 +435,17 @@ async function sendMessage() {
     updateStatus('思考中...', true);
     showTyping(true);
 
-    // 创建思维链容器（在 typing indicator 之前插入）
+    // 思维链容器
     const chainContainer = document.createElement('div');
     chainContainer.className = 'chain-container';
-    chainContainer.style.display = 'none'; // 先隐藏，有内容再显示
+    chainContainer.style.display = 'none';
     document.getElementById('chatContainer').appendChild(chainContainer);
+
+    // 当前活跃的思考卡片（流式追加到同一个卡片）
+    let activeThinkCard = null;
+    let activeThinkContent = null;
+    // 当前活跃的工具调用卡片（等待 result 后去掉 pending）
+    let activeToolCard = null;
 
     try {
         const url = `${API_BASE}/dify/stream?sessionId=${encodeURIComponent(sessionId)}&message=${encodeURIComponent(text)}`;
@@ -400,6 +455,7 @@ async function sendMessage() {
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let assistantBubble = null;
+        let assistantText = '';
         let buffer = '';
         let hasChainContent = false;
 
@@ -411,7 +467,7 @@ async function sendMessage() {
 
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split('\n');
-            buffer = lines.pop(); // 保留不完整的最后一行
+            buffer = lines.pop();
 
             for (const line of lines) {
                 if (!line.startsWith('data:')) continue;
@@ -425,43 +481,78 @@ async function sendMessage() {
 
                 switch (evt.type) {
                     case 'thinking':
-                        appendChainCard(chainContainer, 'thinking', '💭', '思考中', evt.content);
+                        // 结束之前的思考卡片并创建新的，或追加到已有卡片
+                        if (!activeThinkCard) {
+                            activeThinkCard = createThinkCard(chainContainer);
+                            activeThinkContent = activeThinkCard.querySelector('.chain-content');
+                        }
+                        // 追加内容
+                        activeThinkContent.textContent += evt.content;
+                        // 自动滚动到底部
+                        activeThinkContent.scrollTop = activeThinkContent.scrollHeight;
                         hasChainContent = true;
                         chainContainer.style.display = 'flex';
+                        updateStatus('正在思考...', true);
+                        scrollToBottom();
                         break;
 
                     case 'tool_call':
-                        appendToolCallCard(chainContainer, evt.tool, evt.input);
+                        // 结束思考卡片
+                        finalizeThinkCard();
+                        // 创建工具调用卡片（带 pending 旋转动画）
+                        activeToolCard = createToolCallCard(chainContainer, evt.tool, evt.input);
                         hasChainContent = true;
                         chainContainer.style.display = 'flex';
+                        updateStatus('调用工具: ' + formatToolName(evt.tool), true);
+                        scrollToBottom();
                         break;
 
                     case 'tool_result':
+                        // 结束思考卡片
+                        finalizeThinkCard();
+                        // 移除工具调用的 pending 状态
+                        if (activeToolCard) {
+                            activeToolCard.classList.remove('pending');
+                            activeToolCard = null;
+                        }
                         appendToolResultCard(chainContainer, evt.tool, evt.status, evt.content);
                         hasChainContent = true;
                         chainContainer.style.display = 'flex';
+                        scrollToBottom();
                         break;
 
                     case 'text':
+                        // 结束思考卡片
+                        finalizeThinkCard();
                         if (!assistantBubble) {
                             assistantBubble = appendMessage('assistant', '');
                             updateStatus('生成回复中...', true);
                         }
-                        assistantBubble.textContent += evt.content;
+                        assistantText += evt.content;
+                        // 简易 Markdown 渲染
+                        assistantBubble.innerHTML = renderMarkdown(assistantText);
                         scrollToBottom();
                         break;
 
                     case 'done':
+                        finalizeThinkCard();
                         break;
 
                     case 'error':
+                        finalizeThinkCard();
                         appendMessage('system', '请求出错：' + evt.content);
                         break;
                 }
             }
         }
 
-        // 如果有思维链但用户可能想折叠，加一个折叠提示
+        // 结束所有活跃状态
+        finalizeThinkCard();
+        if (activeToolCard) {
+            activeToolCard.classList.remove('pending');
+            activeToolCard = null;
+        }
+
         if (hasChainContent) {
             addChainToggle(chainContainer);
         }
@@ -472,6 +563,14 @@ async function sendMessage() {
         debugLog('Error: ' + e.message);
     }
 
+    function finalizeThinkCard() {
+        if (activeThinkCard) {
+            activeThinkCard.classList.remove('active');
+            activeThinkCard = null;
+            activeThinkContent = null;
+        }
+    }
+
     isProcessing = false;
     document.getElementById('sendBtn').disabled = false;
     updateStatus('就绪', false);
@@ -480,32 +579,32 @@ async function sendMessage() {
 
 // ========== 思维链卡片渲染 ==========
 
-function appendChainCard(container, type, icon, label, content) {
+function createThinkCard(container) {
     const card = document.createElement('div');
-    card.className = `chain-card ${type}`;
+    card.className = 'chain-card thinking active';
     card.innerHTML = `
-        <span class="chain-icon">${icon}</span>
+        <span class="chain-icon">💭</span>
         <div class="chain-body">
-            <div class="chain-label">${label}</div>
-            <div class="chain-content">${escapeHtml(content)}</div>
+            <div class="chain-label">思考中</div>
+            <div class="chain-content"></div>
         </div>`;
     container.appendChild(card);
-    scrollToBottom();
+    return card;
 }
 
-function appendToolCallCard(container, toolName, input) {
+function createToolCallCard(container, toolName, input) {
     const card = document.createElement('div');
-    card.className = 'chain-card tool-call';
+    card.className = 'chain-card tool-call pending';
     const displayName = formatToolName(toolName);
     card.innerHTML = `
-        <span class="chain-icon">🔧</span>
+        <span class="chain-icon">⚙️</span>
         <div class="chain-body">
             <div class="chain-label">调用工具</div>
             <div class="chain-tool-name">${escapeHtml(displayName)}</div>
-            <div class="chain-params">${escapeHtml(input)}</div>
+            <div class="chain-params">${escapeHtml(input || '')}</div>
         </div>`;
     container.appendChild(card);
-    scrollToBottom();
+    return card;
 }
 
 function appendToolResultCard(container, toolName, status, content) {
@@ -518,7 +617,7 @@ function appendToolResultCard(container, toolName, status, content) {
         <span class="chain-icon">${icon}</span>
         <div class="chain-body">
             <div class="chain-label">${label}</div>
-            <div class="chain-content">${escapeHtml(content)}</div>
+            <div class="chain-content">${escapeHtml(content || '')}</div>
         </div>`;
     container.appendChild(card);
     scrollToBottom();
@@ -533,7 +632,6 @@ function addChainToggle(container) {
         collapsed = !collapsed;
         container.style.display = collapsed ? 'none' : 'flex';
         toggle.innerHTML = collapsed ? '▼ 展开思维过程' : '▲ 收起思维过程';
-        // 把 toggle 移到 container 后面
     };
     container.parentNode.insertBefore(toggle, container.nextSibling);
 }
@@ -545,6 +643,19 @@ function formatToolName(name) {
         'generate_and_email_asset_proof': '资产证明邮件'
     };
     return map[name] || name;
+}
+
+// ========== 简易 Markdown 渲染 ==========
+
+function renderMarkdown(text) {
+    let html = escapeHtml(text);
+    // 加粗 **text**
+    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    // 行内代码 `code`
+    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+    // 换行
+    html = html.replace(/\n/g, '<br>');
+    return html;
 }
 
 // ========== 通用工具 ==========
@@ -564,7 +675,11 @@ function appendMessage(role, text) {
     const avatarText = role === 'assistant' ? '🤖' : '👤';
     const bubble = document.createElement('div');
     bubble.className = 'message-bubble';
-    bubble.textContent = text;
+    if (role === 'assistant') {
+        bubble.innerHTML = '';  // assistant 用 innerHTML 渲染 markdown
+    } else {
+        bubble.textContent = text;
+    }
 
     if (role === 'assistant') {
         const avatar = document.createElement('div');
@@ -631,7 +746,6 @@ function toggleDebug() {
 }
 
 function debugLog(msg) {
-    if (!debugVisible) return;
     const el = document.getElementById('debugContent');
     const time = new Date().toLocaleTimeString();
     el.textContent += `\n[${time}] ${msg}`;
