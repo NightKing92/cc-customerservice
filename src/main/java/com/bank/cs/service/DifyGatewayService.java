@@ -64,7 +64,8 @@ public class DifyGatewayService {
         body.put("response_mode", "streaming");
         body.put("user", defaultUserId);
 
-        log.info("[Dify] session={}, query={}", sessionId, userMessage);
+        String requestBody = toJson(body);
+        log.info("[Dify] session={}, query={}, requestBody={}", sessionId, userMessage, requestBody);
 
         Sinks.Many<String> sink = Sinks.many().unicast().onBackpressureBuffer();
 
@@ -84,7 +85,12 @@ public class DifyGatewayService {
                 .subscribe(
                         chunk -> processChunk(chunk, sessionId, sink),
                         error -> {
-                            log.error("[Dify] Stream error", error);
+                            log.error("[Dify] Stream error: {}", error.getMessage());
+                            // 尝试获取更详细的错误信息
+                            if (error instanceof org.springframework.web.reactive.function.client.WebClientResponseException.BadRequest badRequest) {
+                                String responseBody = badRequest.getResponseBodyAsString();
+                                log.error("[Dify] Error response: {}", responseBody);
+                            }
                             sink.tryEmitNext(toSseData(toJson(Map.of(
                                     "type", "error",
                                     "content", error.getMessage() != null ? error.getMessage() : "Unknown error"
