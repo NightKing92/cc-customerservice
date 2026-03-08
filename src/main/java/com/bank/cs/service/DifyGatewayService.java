@@ -45,7 +45,8 @@ public class DifyGatewayService {
     public DifyGatewayService(
             @Value("${dify.api-key}") String apiKey,
             @Value("${dify.base-url}") String baseUrl,
-            @Value("${dify.user-id}") String defaultUserId) {
+            @Value("${dify.user-id}") String defaultUserId,
+            @Value("${dify.app-id}") String appId) {
         this.difyClient = WebClient.builder()
                 .baseUrl(baseUrl)
                 .defaultHeader("Authorization", "Bearer " + apiKey)
@@ -53,7 +54,10 @@ public class DifyGatewayService {
                 .build();
         this.objectMapper = new ObjectMapper();
         this.defaultUserId = defaultUserId;
+        this.appId = appId;
     }
+
+    private final String appId;
 
     public Flux<String> chat(String sessionId, String userMessage) {
         String conversationId = conversationMap.getOrDefault(sessionId, "");
@@ -72,7 +76,7 @@ public class DifyGatewayService {
 
         // 用 DataBuffer 接收原始字节流，手动解析 SSE
         difyClient.post()
-                .uri("/v1/workflows/run")
+                .uri("/v1/apps/" + appId + "/workflows/run")
                 .header("Content-Type", "application/json")
                 .header("Accept", "text/event-stream")
                 .bodyValue(body)

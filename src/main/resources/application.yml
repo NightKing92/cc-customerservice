@@ -13,3 +13,4 @@ dify:
   api-key: ${DIFY_API_KEY:your-dify-api-key}
   base-url: https://api.dify.ai
   user-id: demo-user-001
+  app-id: ${DIFY_APP_ID:your-app-id}
