@@ -45,8 +45,7 @@ public class DifyGatewayService {
     public DifyGatewayService(
             @Value("${dify.api-key}") String apiKey,
             @Value("${dify.base-url}") String baseUrl,
-            @Value("${dify.user-id}") String defaultUserId,
-            @Value("${dify.app-id}") String appId) {
+            @Value("${dify.user-id}") String defaultUserId) {
         this.difyClient = WebClient.builder()
                 .baseUrl(baseUrl)
                 .defaultHeader("Authorization", "Bearer " + apiKey)
@@ -54,29 +53,21 @@ public class DifyGatewayService {
                 .build();
         this.objectMapper = new ObjectMapper();
         this.defaultUserId = defaultUserId;
-        this.appId = appId;
     }
 
-    private final String appId;
-
     public Flux<String> chat(String sessionId, String userMessage) {
-        String conversationId = conversationMap.getOrDefault(sessionId, "");
-
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("inputs", Map.of("user_id", defaultUserId, "query", userMessage));
+        body.put("inputs", Map.of("query", userMessage));
         body.put("response_mode", "streaming");
         body.put("user", defaultUserId);
-        if (!conversationId.isEmpty()) {
-            body.put("conversation_id", conversationId);
-        }
 
-        log.info("[Dify] session={}, conversationId={}, query={}", sessionId, conversationId, userMessage);
+        log.info("[Dify] session={}, query={}", sessionId, userMessage);
 
         Sinks.Many<String> sink = Sinks.many().unicast().onBackpressureBuffer();
 
         // 用 DataBuffer 接收原始字节流，手动解析 SSE
         difyClient.post()
-                .uri("/v1/apps/" + appId + "/workflows/run")
+                .uri("/v1/workflows/run")
                 .header("Content-Type", "application/json")
                 .header("Accept", "text/event-stream")
                 .bodyValue(body)
