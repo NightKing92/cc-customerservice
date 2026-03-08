@@ -57,7 +57,10 @@ public class DifyGatewayService {
 
     public Flux<String> chat(String sessionId, String userMessage) {
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("inputs", Map.of("query", userMessage));
+        body.put("inputs", Map.of(
+                "user_id", defaultUserId,
+                "userinput.query", userMessage
+        ));
         body.put("response_mode", "streaming");
         body.put("user", defaultUserId);
 
