@@ -181,6 +181,31 @@
         .chain-card.thinking.active {
             animation: thinkPulse 1.5s ease-in-out infinite;
         }
+
+        /* 思考完成时的过渡动画 */
+        @keyframes thinkComplete {
+            0% { border-left-color: #1a73e8; background: #f8f8f8; }
+            100% { border-left-color: #34a853; background: #e6f4ea; }
+        }
+        .chain-card.thinking.finished {
+            animation: thinkComplete 0.6s ease forwards;
+            color: #1e7e34;
+        }
+        .chain-card.thinking.finished .chain-icon::after {
+            content: ' ✓';
+            font-size: 12px;
+        }
+        .chain-card.thinking.finished .chain-label {
+            color: #34a853;
+        }
+
+        /* 思考完成后的淡出效果 */
+        .chain-card.thinking.faded {
+            animation: fadeOutCard 0.5s ease 0.3s forwards;
+        }
+        @keyframes fadeOutCard {
+            to { opacity: 0.5; transform: translateX(-4px); }
+        }
         /* 打字光标 */
         .chain-card.thinking.active .chain-content::after {
             content: '▌';
@@ -432,7 +457,7 @@ async function sendMessage() {
     document.getElementById('quickActions').style.display = 'none';
 
     appendMessage('user', text);
-    updateStatus('思考中...', true);
+    updateStatus('💭 思考中...', true);
     showTyping(true);
 
     // 思维链容器
@@ -446,6 +471,9 @@ async function sendMessage() {
     let activeThinkContent = null;
     // 当前活跃的工具调用卡片（等待 result 后去掉 pending）
     let activeToolCard = null;
+    // 打字机效果相关
+    let typingTimeout = null;
+    let pendingTextBuffer = '';
 
     try {
         const url = `${API_BASE}/dify/stream?sessionId=${encodeURIComponent(sessionId)}&message=${encodeURIComponent(text)}`;
@@ -488,11 +516,11 @@ async function sendMessage() {
                         }
                         // 追加内容
                         activeThinkContent.textContent += evt.content;
-                        // 自动滚动到底部
-                        activeThinkContent.scrollTop = activeThinkContent.scrollHeight;
+                        // 强制重绘以确保光标位置更新
+                        forceRepaint(activeThinkContent);
                         hasChainContent = true;
                         chainContainer.style.display = 'flex';
-                        updateStatus('正在思考...', true);
+                        updateStatus('💭 思考中...', true);
                         scrollToBottom();
                         break;
 
@@ -518,23 +546,37 @@ async function sendMessage() {
                         appendToolResultCard(chainContainer, evt.tool, evt.status, evt.content);
                         hasChainContent = true;
                         chainContainer.style.display = 'flex';
+                        // 更新状态
+                        const resultStatus = evt.status === 'BLOCKED_BY_RISK' ? '⛔ 风控拦截' : '✅ 工具完成';
+                        updateStatus(resultStatus, true);
                         scrollToBottom();
                         break;
 
                     case 'text':
-                        // 结束思考卡片
+                        // 结束思考卡片，添加完成动画
                         finalizeThinkCard();
                         if (!assistantBubble) {
                             assistantBubble = appendMessage('assistant', '');
-                            updateStatus('生成回复中...', true);
+                            updateStatus('✍️ 生成回复中...', true);
                         }
-                        assistantText += evt.content;
-                        // 简易 Markdown 渲染
-                        assistantBubble.innerHTML = renderMarkdown(assistantText);
+                        // 使用打字机效果追加内容
+                        pendingTextBuffer += evt.content;
+                        typeWriterEffect(assistantBubble, pendingTextBuffer);
                         scrollToBottom();
                         break;
 
                     case 'done':
+                        // 清除打字机效果定时器，确保完整显示
+                        if (typingTimeout) {
+                            clearTimeout(typingTimeout);
+                            typingTimeout = null;
+                        }
+                        // 如果有 pending 的文本，直接渲染
+                        if (assistantBubble && pendingTextBuffer) {
+                            assistantBubble.innerHTML = renderMarkdown(pendingTextBuffer);
+                            assistantBubble.setAttribute('data-rendered', pendingTextBuffer);
+                            pendingTextBuffer = '';
+                        }
                         finalizeThinkCard();
                         break;
 
@@ -566,9 +608,56 @@ async function sendMessage() {
     function finalizeThinkCard() {
         if (activeThinkCard) {
             activeThinkCard.classList.remove('active');
+            // 添加思考完成动画
+            activeThinkCard.classList.add('finished');
+            // 动画完成后淡出
+            setTimeout(() => {
+                activeThinkCard.classList.add('faded');
+            }, 600);
             activeThinkCard = null;
             activeThinkContent = null;
         }
+    }
+
+    // 强制重绘以更新光标位置
+    function forceRepaint(el) {
+        el.style.display = 'none';
+        el.offsetHeight; // 触发重排
+        el.style.display = '';
+    }
+
+    // 打字机效果
+    function typeWriterEffect(bubble, fullText) {
+        // 清除之前的打字定时器
+        if (typingTimeout) {
+            clearTimeout(typingTimeout);
+        }
+
+        // 获取当前已显示的文本长度
+        const currentText = bubble.getAttribute('data-rendered') || '';
+        const remainingText = fullText.substring(currentText.length);
+
+        if (!remainingText) return;
+
+        // 逐字显示，每字 30ms
+        let index = 0;
+        const speed = 30;
+
+        function typeChar() {
+            if (index < remainingText.length) {
+                const newText = currentText + remainingText.substring(0, index + 1);
+                bubble.innerHTML = renderMarkdown(newText);
+                bubble.setAttribute('data-rendered', newText);
+                index++;
+                typingTimeout = setTimeout(typeChar, speed);
+            } else {
+                // 打字完成，保存完整文本
+                bubble.setAttribute('data-rendered', fullText);
+            }
+            scrollToBottom();
+        }
+
+        typeChar();
     }
 
     isProcessing = false;
@@ -677,6 +766,7 @@ function appendMessage(role, text) {
     bubble.className = 'message-bubble';
     if (role === 'assistant') {
         bubble.innerHTML = '';  // assistant 用 innerHTML 渲染 markdown
+        bubble.setAttribute('data-rendered', '');  // 用于打字机效果
     } else {
         bubble.textContent = text;
     }
