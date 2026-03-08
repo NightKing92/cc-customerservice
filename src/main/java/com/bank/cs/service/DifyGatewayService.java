@@ -186,6 +186,19 @@ public class DifyGatewayService {
                         // Agent 节点完成，可能包含工具调用信息
                         log.info("[Dify] Agent node finished");
                     }
+                    // 处理"回复客户"节点的输出（text节点或answer节点）
+                    JsonNode outputs = node.path("data").path("outputs");
+                    if (outputs.has("text")) {
+                        String text = outputs.path("text").asText("");
+                        if (!text.isEmpty()) {
+                            emitText(text, sessionId, sink);
+                        }
+                    } else if (outputs.has("answer")) {
+                        String text = outputs.path("answer").asText("");
+                        if (!text.isEmpty()) {
+                            emitText(text, sessionId, sink);
+                        }
+                    }
                 }
                 case "workflow_finished" -> {
                     sink.tryEmitNext(toSseData("{\"type\":\"done\"}"));
