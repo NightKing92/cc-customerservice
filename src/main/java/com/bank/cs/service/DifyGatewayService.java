@@ -61,6 +61,7 @@ public class DifyGatewayService {
                 "user_id", defaultUserId,
                 "userinput.query", userMessage
         ));
+        body.put("query", userMessage);
         body.put("response_mode", "streaming");
         body.put("user", defaultUserId);
 
@@ -71,7 +72,7 @@ public class DifyGatewayService {
 
         // 用 DataBuffer 接收原始字节流，手动解析 SSE
         difyClient.post()
-                .uri("/v1/workflows/run")
+                .uri("/v1/chat-messages")
                 .header("Content-Type", "application/json")
                 .header("Accept", "text/event-stream")
                 .bodyValue(body)
