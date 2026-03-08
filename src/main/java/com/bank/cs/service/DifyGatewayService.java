@@ -59,8 +59,7 @@ public class DifyGatewayService {
         String conversationId = conversationMap.getOrDefault(sessionId, "");
 
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("inputs", Map.of("user_id", defaultUserId));
-        body.put("query", userMessage);
+        body.put("inputs", Map.of("user_id", defaultUserId, "query", userMessage));
         body.put("response_mode", "streaming");
         body.put("user", defaultUserId);
         if (!conversationId.isEmpty()) {
@@ -73,7 +72,7 @@ public class DifyGatewayService {
 
         // 用 DataBuffer 接收原始字节流，手动解析 SSE
         difyClient.post()
-                .uri("/v1/chat-messages")
+                .uri("/v1/workflows/run")
                 .header("Content-Type", "application/json")
                 .header("Accept", "text/event-stream")
                 .bodyValue(body)
@@ -183,7 +182,11 @@ public class DifyGatewayService {
                         log.info("[Dify] Agent node finished");
                     }
                 }
-                // workflow_started, workflow_finished, ping 等忽略
+                case "workflow_finished" -> {
+                    sink.tryEmitNext(toSseData("{\"type\":\"done\"}"));
+                    bufferMap.remove(sessionId);
+                }
+                // workflow_started, ping 等忽略
                 default -> log.info("[Dify] Ignored event: {}", event);
             }
         } catch (Exception e) {
